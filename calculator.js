@@ -1,5 +1,5 @@
-// Access React hooks from the global React object
-const { useState, useEffect } = React;
+import { useState, useEffect } from 'react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts';
 
 // EC2 instance types and pricing (approximate monthly costs)
 const ec2InstanceTypes = {
@@ -44,7 +44,7 @@ const postgresInstanceTypes = {
   "db.r5.4xlarge": { vCPU: 16, memory: 128, monthlyCost: 2208 }
 };
 
-const TiDBMigrationCalculator = () => {
+const EnhancedTiDBMigrationCalculator = () => {
   // State for PostgreSQL inputs
   const [postgres, setPostgres] = useState({
     instanceType: 'db.r5.2xlarge',
@@ -53,7 +53,7 @@ const TiDBMigrationCalculator = () => {
     iops: 3000,
     readOps: 5000,
     writeOps: 1000,
-    monthlyCost: 2000,
+    monthlyCost: 2208 * 2, // Default to match instance cost
     multiAZ: true,
     readReplicas: 1
   });
@@ -114,13 +114,48 @@ const TiDBMigrationCalculator = () => {
     operationalFTE: 0.5 // Full-time equivalent staff
   });
 
+  // State for comparison data to track changes in TiDB config based on PostgreSQL changes
+  const [comparisonData, setComparisonData] = useState({
+    previousInstanceType: postgres.instanceType,
+    history: [],
+    costBreakdown: []
+  });
+
+  // State for active tab
+  const [activeTab, setActiveTab] = useState('calculator');
+
   // Handler for PostgreSQL input changes
   const handlePostgresChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setPostgres(prev => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : (type === 'number' ? Number(value) : value)
-    }));
+    
+    // If changing the instance type, update the monthly cost with the default cost for that instance type
+    if (name === 'instanceType') {
+      const instanceCost = postgresInstanceTypes[value]?.monthlyCost || 0;
+      setPostgres(prev => ({
+        ...prev,
+        [name]: value,
+        monthlyCost: instanceCost * prev.instanceCount * (prev.multiAZ ? 2 : 1) + 
+                    (instanceCost * prev.readReplicas)
+      }));
+    } else if (name === 'instanceCount' || name === 'readReplicas' || name === 'multiAZ') {
+      // Recalculate costs if changing instance count, replicas, or multi-AZ
+      const instanceCost = postgresInstanceTypes[postgres.instanceType]?.monthlyCost || 0;
+      const newInstanceCount = name === 'instanceCount' ? Number(value) : postgres.instanceCount;
+      const newMultiAZ = name === 'multiAZ' ? checked : postgres.multiAZ;
+      const newReadReplicas = name === 'readReplicas' ? Number(value) : postgres.readReplicas;
+      
+      setPostgres(prev => ({
+        ...prev,
+        [name]: type === 'checkbox' ? checked : (type === 'number' ? Number(value) : value),
+        monthlyCost: instanceCost * newInstanceCount * (newMultiAZ ? 2 : 1) + 
+                    (instanceCost * newReadReplicas)
+      }));
+    } else {
+      setPostgres(prev => ({
+        ...prev,
+        [name]: type === 'checkbox' ? checked : (type === 'number' ? Number(value) : value)
+      }));
+    }
   };
 
   // Handler for workload input changes
@@ -183,7 +218,7 @@ const TiDBMigrationCalculator = () => {
     // In TiDB, SQL processing is done by TiDB nodes - calculate equivalent TiDB nodes
     // TiDB nodes are most closely comparable to PostgreSQL primary instances in function
     // Minimum of 3 TiDB nodes for HA, and each TiDB node has approximately 16 vCPU in a typical deployment (c5.4xlarge)
-    const vcpuPerTidbNode = 16; // Default assumption based on c5.4xlarge
+    const vcpuPerTidbNode = ec2InstanceTypes[instances.tidbInstanceType]?.vCPU || 16; // Get actual vCPU from selected instance
     const suggestedTidbNodesFromCpu = Math.max(3, Math.ceil(effectivePostgresVcpu / vcpuPerTidbNode));
     
     // Also calculate based on connections (balancing factor)
@@ -237,6 +272,7 @@ const TiDBMigrationCalculator = () => {
       1; // +1 for monitoring
     const suggestedWorkerNodes = Math.max(6, Math.ceil(totalComponents / componentsPerWorker));
     
+    // Update TiDB cluster configuration based on calculations
     setTidbCluster(prev => ({
       ...prev,
       tidbNodes: Math.ceil(baseTidbNodes * spikeFactor),
@@ -258,22 +294,83 @@ const TiDBMigrationCalculator = () => {
         ...prev,
         tidbInstanceType: "r5.2xlarge" // Medium-high memory option
       }));
+    } else {
+      setInstances(prev => ({
+        ...prev,
+        tidbInstanceType: "c5.4xlarge" // Default compute-optimized option
+      }));
+    }
+    
+    // If instance type has changed, record this in the comparison history
+    if (postgres.instanceType !== comparisonData.previousInstanceType) {
+      const prevType = comparisonData.previousInstanceType;
+      const prevVcpu = postgresInstanceTypes[prevType]?.vCPU || 0;
+      const prevMem = postgresInstanceTypes[prevType]?.memory || 0;
+      const newVcpu = postgresInstanceTypes[postgres.instanceType]?.vCPU || 0;
+      const newMem = postgresInstanceTypes[postgres.instanceType]?.memory || 0;
+      
+      // Add to history
+      setComparisonData(prev => {
+        // Calculate the total monthly cost of the TiDB deployment
+        const tidbInstanceCost = ec2InstanceTypes[instances.tidbInstanceType]?.monthlyCost || 493;
+        const tikvInstanceCost = ec2InstanceTypes[instances.tikvInstanceType]?.monthlyCost || 998;
+        const pdInstanceCost = ec2InstanceTypes[instances.pdInstanceType]?.monthlyCost || 278;
+        const tiflashInstanceCost = ec2InstanceTypes[instances.tiflashInstanceType]?.monthlyCost || 1995;
+        const monitoringInstanceCost = ec2InstanceTypes[instances.monitoringInstanceType]?.monthlyCost || 246;
+
+        const totalInstanceCost = 
+          tidbInstanceCost * Math.ceil(baseTidbNodes * spikeFactor) +
+          tikvInstanceCost * Math.ceil(suggestedTikvNodes * writeHeavyFactor) +
+          pdInstanceCost * tidbCluster.pdNodes +
+          tiflashInstanceCost * suggestedTiflashNodes +
+          monitoringInstanceCost;
+        
+        const newHistory = [...prev.history];
+        // Limit history to 10 items
+        if (newHistory.length >= 10) {
+          newHistory.shift();
+        }
+        
+        newHistory.push({
+          id: newHistory.length,
+          from: prevType,
+          to: postgres.instanceType,
+          vcpuChange: `${prevVcpu} → ${newVcpu}`,
+          memoryChange: `${prevMem}GB → ${newMem}GB`,
+          tidbNodesChange: `${prev.history.length > 0 ? prev.history[prev.history.length-1].tidbNodes : 3} → ${Math.ceil(baseTidbNodes * spikeFactor)}`,
+          tikvNodesChange: `${prev.history.length > 0 ? prev.history[prev.history.length-1].tikvNodes : 3} → ${Math.ceil(suggestedTikvNodes * writeHeavyFactor)}`,
+          instanceTypeChange: `${prev.history.length > 0 ? prev.history[prev.history.length-1].tidbInstanceType : 'c5.4xlarge'} → ${postgresMemory >= 128 ? "r5.4xlarge" : postgresMemory >= 64 ? "r5.2xlarge" : "c5.4xlarge"}`,
+          tidbNodes: Math.ceil(baseTidbNodes * spikeFactor),
+          tikvNodes: Math.ceil(suggestedTikvNodes * writeHeavyFactor),
+          tidbInstanceType: postgresMemory >= 128 ? "r5.4xlarge" : postgresMemory >= 64 ? "r5.2xlarge" : "c5.4xlarge",
+          monthlyCost: totalInstanceCost
+        });
+        
+        return {
+          ...prev,
+          previousInstanceType: postgres.instanceType,
+          history: newHistory
+        };
+      });
     }
   }, [
-    postgres.storageGB,
     postgres.instanceType,
     postgres.instanceCount,
     postgres.readReplicas,
     postgres.writeOps,
+    postgres.storageGB,
     workload.concurrentConnections, 
     workload.readWriteRatio, 
     workload.type,
     workload.trafficSpikes,
     workload.peakRatio,
     tidbCluster.dataReplicationFactor,
-    tidbCluster.pdNodes
+    tidbCluster.pdNodes,
+    instances.tidbInstanceType,
+    comparisonData.previousInstanceType
   ]);
 
+  // Calculate cost metrics
   // Calculate EBS storage costs
   const calculateEbsCost = (type, sizeGB, iops = 3000, throughput = 125) => {
     if (sizeGB === 0) return 0;
@@ -346,371 +443,505 @@ const TiDBMigrationCalculator = () => {
   const savingsPercentage = postgresMonthlyCost > 0 ? (monthlySavings / postgresMonthlyCost) * 100 : 0;
   const paybackPeriodMonths = monthlySavings > 0 ? oneTimeCosts / monthlySavings : Infinity;
 
+  // Update cost breakdown data for chart
+  useEffect(() => {
+    const costBreakdownData = [
+      { name: 'TiDB Nodes', value: tidbInstanceCost * tidbCluster.tidbNodes },
+      { name: 'TiKV Nodes', value: tikvInstanceCost * tidbCluster.tikvNodes },
+      { name: 'PD Nodes', value: pdInstanceCost * tidbCluster.pdNodes },
+      { name: 'TiFlash Nodes', value: tiflashInstanceCost * tidbCluster.tiflashNodes },
+      { name: 'Monitoring', value: monitoringInstanceCost },
+      { name: 'Storage', value: totalStorageCost },
+      { name: 'S3 Backup', value: s3BackupCost },
+      { name: 'Network', value: networkCost },
+      { name: 'Kubernetes', value: totalKubernetesCost }
+    ];
+    
+    setComparisonData(prev => ({
+      ...prev,
+      costBreakdown: costBreakdownData
+    }));
+  }, [
+    tidbInstanceCost,
+    tikvInstanceCost,
+    pdInstanceCost,
+    tiflashInstanceCost,
+    monitoringInstanceCost,
+    totalStorageCost,
+    s3BackupCost,
+    networkCost,
+    totalKubernetesCost,
+    tidbCluster.tidbNodes,
+    tidbCluster.tikvNodes,
+    tidbCluster.pdNodes,
+    tidbCluster.tiflashNodes
+  ]);
+  
+  // Generate instance type impact data for visualization
+  const instanceTypeImpactData = Object.keys(postgresInstanceTypes).map(type => {
+    const pgVcpu = postgresInstanceTypes[type].vCPU;
+    const pgMemory = postgresInstanceTypes[type].memory;
+    const vcpuPerTidbNode = 16; // Default TiDB node vCPU
+    
+    // Estimate TiDB nodes based on vCPU
+    const estimatedTidbNodes = Math.max(3, Math.ceil((pgVcpu * postgres.instanceCount) / vcpuPerTidbNode));
+    
+    // Determine instance type based on memory
+    let recommendedInstanceType;
+    if (pgMemory >= 128) {
+      recommendedInstanceType = "r5.4xlarge";
+    } else if (pgMemory >= 64) {
+      recommendedInstanceType = "r5.2xlarge";
+    } else {
+      recommendedInstanceType = "c5.4xlarge";
+    }
+    
+    const tidbCost = ec2InstanceTypes[recommendedInstanceType].monthlyCost * estimatedTidbNodes;
+    
+    return {
+      name: type,
+      vCPU: pgVcpu,
+      memory: pgMemory,
+      tidbNodes: estimatedTidbNodes,
+      instanceType: recommendedInstanceType,
+      tidbCost: tidbCost
+    };
+  });
+
+  // Custom formatter for tooltip values
+  const formatCurrency = (value) => {
+    return `$${value.toFixed(2)}`;
+  };
+
+  // Get PostgreSQL instance configurations for comparison
+  const pgConfigs = [
+    {
+      name: 'Small',
+      instanceType: 'db.m5.large',
+      cpu: postgresInstanceTypes['db.m5.large'].vCPU,
+      memory: postgresInstanceTypes['db.m5.large'].memory,
+      monthlyCost: postgresInstanceTypes['db.m5.large'].monthlyCost * 2 // Assuming 2 instances
+    },
+    {
+      name: 'Medium',
+      instanceType: 'db.r5.xlarge',
+      cpu: postgresInstanceTypes['db.r5.xlarge'].vCPU,
+      memory: postgresInstanceTypes['db.r5.xlarge'].memory,
+      monthlyCost: postgresInstanceTypes['db.r5.xlarge'].monthlyCost * 2
+    },
+    {
+      name: 'Large',
+      instanceType: 'db.r5.2xlarge',
+      cpu: postgresInstanceTypes['db.r5.2xlarge'].vCPU,
+      memory: postgresInstanceTypes['db.r5.2xlarge'].memory,
+      monthlyCost: postgresInstanceTypes['db.r5.2xlarge'].monthlyCost * 2
+    },
+    {
+      name: 'X-Large',
+      instanceType: 'db.r5.4xlarge',
+      cpu: postgresInstanceTypes['db.r5.4xlarge'].vCPU,
+      memory: postgresInstanceTypes['db.r5.4xlarge'].memory,
+      monthlyCost: postgresInstanceTypes['db.r5.4xlarge'].monthlyCost * 2
+    }
+  ];
+
+  // Calculate TiDB equivalent configs and costs for comparison
+  const getTidbEquivalentConfig = (pgConfig) => {
+    const pgVcpu = postgresInstanceTypes[pgConfig.instanceType].vCPU;
+    const pgMemory = postgresInstanceTypes[pgConfig.instanceType].memory;
+    const vcpuPerTidbNode = 16; // Default TiDB node vCPU
+    
+    // Estimate TiDB nodes based on vCPU
+    const estimatedTidbNodes = Math.max(3, Math.ceil((pgVcpu * 2) / vcpuPerTidbNode));
+    
+    // Determine instance type based on memory
+    let recommendedInstanceType;
+    if (pgMemory >= 128) {
+      recommendedInstanceType = "r5.4xlarge";
+    } else if (pgMemory >= 64) {
+      recommendedInstanceType = "r5.2xlarge";
+    } else {
+      recommendedInstanceType = "c5.4xlarge";
+    }
+    
+    const tidbCost = ec2InstanceTypes[recommendedInstanceType].monthlyCost * estimatedTidbNodes;
+    const tikvCost = ec2InstanceTypes["i3.4xlarge"].monthlyCost * 3; // Minimum 3 TiKV nodes
+    const pdCost = ec2InstanceTypes["m5.2xlarge"].monthlyCost * 3; // Minimum 3 PD nodes
+    
+    return {
+      tidbNodes: estimatedTidbNodes,
+      instanceType: recommendedInstanceType,
+      monthlyCost: tidbCost + tikvCost + pdCost + monitoringInstanceCost,
+      savings: pgConfig.monthlyCost - (tidbCost + tikvCost + pdCost + monitoringInstanceCost),
+      savingsPercentage: ((pgConfig.monthlyCost - (tidbCost + tikvCost + pdCost + monitoringInstanceCost)) / pgConfig.monthlyCost) * 100
+    };
+  };
+
+  const comparisonConfigs = pgConfigs.map(pgConfig => ({
+    ...pgConfig,
+    tidb: getTidbEquivalentConfig(pgConfig)
+  }));
+
   return (
     <div className="mx-auto p-4 max-w-6xl">
-      <h1 className="text-2xl font-bold mb-6 text-center">TiDB Migration from PostgreSQL Cost Calculator</h1>
-      <div className="mb-4 bg-blue-100 p-3 rounded">
-        <p className="text-sm">This calculator now takes PostgreSQL instance type and count into consideration when calculating TiDB resource requirements and costs.</p>
+      <h1 className="text-2xl font-bold mb-6 text-center">Enhanced TiDB Migration from PostgreSQL Cost Calculator</h1>
+      
+      {/* Tabs Navigation */}
+      <div className="mb-6 flex border-b">
+        <button 
+          className={`py-2 px-4 font-medium ${activeTab === 'calculator' ? 'text-blue-600 border-blue-600 border-b-2' : 'text-gray-500'}`}
+          onClick={() => setActiveTab('calculator')}>
+          Calculator
+        </button>
+        <button 
+          className={`py-2 px-4 font-medium ${activeTab === 'visualizations' ? 'text-blue-600 border-blue-600 border-b-2' : 'text-gray-500'}`}
+          onClick={() => setActiveTab('visualizations')}>
+          Impact Analysis
+        </button>
+        <button 
+          className={`py-2 px-4 font-medium ${activeTab === 'comparison' ? 'text-blue-600 border-blue-600 border-b-2' : 'text-gray-500'}`}
+          onClick={() => setActiveTab('comparison')}>
+          Instance Comparison
+        </button>
+        <button 
+          className={`py-2 px-4 font-medium ${activeTab === 'history' ? 'text-blue-600 border-blue-600 border-b-2' : 'text-gray-500'}`}
+          onClick={() => setActiveTab('history')}>
+          Change History
+        </button>
       </div>
       
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Input Section */}
-        <div className="space-y-6">
-          {/* PostgreSQL Current Setup */}
-          <div className="bg-blue-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">Current PostgreSQL Environment</h2>
-            
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="block text-sm mb-1">Instance Type</label>
-                <select
-                  name="instanceType"
-                  value={postgres.instanceType}
-                  onChange={handlePostgresChange}
-                  className="w-full p-2 border rounded"
-                >
-                  {Object.keys(postgresInstanceTypes).map(type => (
-                    <option key={type} value={type}>
-                      {type} ({postgresInstanceTypes[type].vCPU} vCPU, {postgresInstanceTypes[type].memory} GB)
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Primary Instances</label>
-                <input
-                  type="number"
-                  name="instanceCount"
-                  value={postgres.instanceCount}
-                  onChange={handlePostgresChange}
-                  className="w-full p-2 border rounded"
-                  min="1"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Storage (GB)</label>
-                <input
-                  type="number"
-                  name="storageGB"
-                  value={postgres.storageGB}
-                  onChange={handlePostgresChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Provisioned IOPS</label>
-                <input
-                  type="number"
-                  name="iops"
-                  value={postgres.iops}
-                  onChange={handlePostgresChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Read Operations/sec</label>
-                <input
-                  type="number"
-                  name="readOps"
-                  value={postgres.readOps}
-                  onChange={handlePostgresChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Write Operations/sec</label>
-                <input
-                  type="number"
-                  name="writeOps"
-                  value={postgres.writeOps}
-                  onChange={handlePostgresChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Current Monthly Cost ($)</label>
-                <input
-                  type="number"
-                  name="monthlyCost"
-                  value={postgres.monthlyCost}
-                  onChange={handlePostgresChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                />
-              </div>
-              <div className="flex items-center space-x-4 pt-4">
+      {/* Calculator Tab */}
+      {activeTab === 'calculator' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Input Section */}
+          <div className="space-y-6">
+            {/* PostgreSQL Current Setup */}
+            <div className="bg-blue-50 p-4 rounded shadow">
+              <h2 className="text-xl font-semibold mb-4">Current PostgreSQL Environment</h2>
+              
+              <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
-                  <input
-                    type="checkbox"
-                    name="multiAZ"
-                    checked={postgres.multiAZ}
+                  <label className="block text-sm mb-1">Instance Type</label>
+                  <select
+                    name="instanceType"
+                    value={postgres.instanceType}
                     onChange={handlePostgresChange}
-                    className="mr-2"
-                  />
-                  <label>Multi-AZ</label>
+                    className="w-full p-2 border rounded"
+                  >
+                    {Object.keys(postgresInstanceTypes).map(type => (
+                      <option key={type} value={type}>
+                        {type} ({postgresInstanceTypes[type].vCPU} vCPU, {postgresInstanceTypes[type].memory} GB)
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
-                  <label className="mr-2">Read Replicas:</label>
+                  <label className="block text-sm mb-1">Primary Instances</label>
                   <input
                     type="number"
-                    name="readReplicas"
-                    value={postgres.readReplicas}
+                    name="instanceCount"
+                    value={postgres.instanceCount}
                     onChange={handlePostgresChange}
-                    className="w-16 p-1 border rounded"
+                    className="w-full p-2 border rounded"
+                    min="1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Storage (GB)</label>
+                  <input
+                    type="number"
+                    name="storageGB"
+                    value={postgres.storageGB}
+                    onChange={handlePostgresChange}
+                    className="w-full p-2 border rounded"
                     min="0"
                   />
                 </div>
-              </div>
-            </div>
-          </div>
-          
-          {/* Workload Characteristics */}
-          <div className="bg-purple-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">Workload Characteristics</h2>
-            
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="block text-sm mb-1">Read/Write Ratio</label>
-                <select
-                  name="readWriteRatio"
-                  value={workload.readWriteRatio}
-                  onChange={handleWorkloadChange}
-                  className="w-full p-2 border rounded"
-                >
-                  <option value="90/10">90/10 (Read-heavy)</option>
-                  <option value="80/20">80/20 (Typical)</option>
-                  <option value="50/50">50/50 (Balanced)</option>
-                  <option value="30/70">30/70 (Write-heavy)</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Workload Type</label>
-                <select
-                  name="type"
-                  value={workload.type}
-                  onChange={handleWorkloadChange}
-                  className="w-full p-2 border rounded"
-                >
-                  <option value="OLTP">OLTP (Transactional)</option>
-                  <option value="OLAP">OLAP (Analytical)</option>
-                  <option value="Mixed">Mixed (HTAP)</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Data Growth Rate (%/month)</label>
-                <input
-                  type="number"
-                  name="dataGrowthRate"
-                  value={workload.dataGrowthRate}
-                  onChange={handleWorkloadChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                  max="100"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Peak Concurrent Connections</label>
-                <input
-                  type="number"
-                  name="concurrentConnections"
-                  value={workload.concurrentConnections}
-                  onChange={handleWorkloadChange}
-                  className="w-full p-2 border rounded"
-                  min="1"
-                />
-              </div>
-              <div className="col-span-2">
-                <div className="flex items-center mb-2">
+                <div>
+                  <label className="block text-sm mb-1">Provisioned IOPS</label>
                   <input
-                    type="checkbox"
-                    name="trafficSpikes"
-                    checked={workload.trafficSpikes}
-                    onChange={handleWorkloadChange}
-                    className="mr-2"
+                    type="number"
+                    name="iops"
+                    value={postgres.iops}
+                    onChange={handlePostgresChange}
+                    className="w-full p-2 border rounded"
+                    min="0"
                   />
-                  <label>Traffic Spikes</label>
                 </div>
-                {workload.trafficSpikes && (
-                  <div className="flex items-center">
-                    <label className="mr-2">Peak-to-Normal Ratio:</label>
+                <div>
+                  <label className="block text-sm mb-1">Read Operations/sec</label>
+                  <input
+                    type="number"
+                    name="readOps"
+                    value={postgres.readOps}
+                    onChange={handlePostgresChange}
+                    className="w-full p-2 border rounded"
+                    min="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Write Operations/sec</label>
+                  <input
+                    type="number"
+                    name="writeOps"
+                    value={postgres.writeOps}
+                    onChange={handlePostgresChange}
+                    className="w-full p-2 border rounded"
+                    min="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Current Monthly Cost ($)</label>
+                  <input
+                    type="number"
+                    name="monthlyCost"
+                    value={postgres.monthlyCost}
+                    onChange={handlePostgresChange}
+                    className="w-full p-2 border rounded"
+                    min="0"
+                  />
+                </div>
+                <div className="flex items-center space-x-4 pt-4">
+                  <div>
+                    <input
+                      type="checkbox"
+                      name="multiAZ"
+                      checked={postgres.multiAZ}
+                      onChange={handlePostgresChange}
+                      className="mr-2"
+                    />
+                    <label>Multi-AZ</label>
+                  </div>
+                  <div>
+                    <label className="mr-2">Read Replicas:</label>
                     <input
                       type="number"
-                      name="peakRatio"
-                      value={workload.peakRatio}
-                      onChange={handleWorkloadChange}
-                      className="w-16 p-2 border rounded"
-                      min="1"
-                      step="0.5"
+                      name="readReplicas"
+                      value={postgres.readReplicas}
+                      onChange={handlePostgresChange}
+                      className="w-16 p-1 border rounded"
+                      min="0"
                     />
-                    <span className="ml-2">x</span>
                   </div>
-                )}
+                </div>
               </div>
             </div>
-          </div>
-          
-          {/* TiDB Cluster Configuration */}
-          <div className="bg-green-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">TiDB Cluster Configuration</h2>
             
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="block text-sm mb-1">TiDB Nodes</label>
-                <input
-                  type="number"
-                  name="tidbNodes"
-                  value={tidbCluster.tidbNodes}
-                  onChange={handleTidbClusterChange}
-                  className="w-full p-2 border rounded"
-                  min="3"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">TiKV Nodes</label>
-                <input
-                  type="number"
-                  name="tikvNodes"
-                  value={tidbCluster.tikvNodes}
-                  onChange={handleTidbClusterChange}
-                  className="w-full p-2 border rounded"
-                  min="3"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">PD Nodes</label>
-                <input
-                  type="number"
-                  name="pdNodes"
-                  value={tidbCluster.pdNodes}
-                  onChange={handleTidbClusterChange}
-                  className="w-full p-2 border rounded"
-                  min="3"
-                />
-              </div>
-              <div className="flex items-center">
-                <input
-                  type="checkbox"
-                  name="useTiflash"
-                  checked={tidbCluster.useTiflash}
-                  onChange={handleTidbClusterChange}
-                  className="mr-2"
-                />
-                <label>Use TiFlash (HTAP)</label>
-              </div>
-              {tidbCluster.useTiflash && (
+            {/* Workload Characteristics */}
+            <div className="bg-purple-50 p-4 rounded shadow">
+              <h2 className="text-xl font-semibold mb-4">Workload Characteristics</h2>
+              
+              <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
-                  <label className="block text-sm mb-1">TiFlash Nodes</label>
+                  <label className="block text-sm mb-1">Read/Write Ratio</label>
+                  <select
+                    name="readWriteRatio"
+                    value={workload.readWriteRatio}
+                    onChange={handleWorkloadChange}
+                    className="w-full p-2 border rounded"
+                  >
+                    <option value="90/10">90/10 (Read-heavy)</option>
+                    <option value="80/20">80/20 (Typical)</option>
+                    <option value="50/50">50/50 (Balanced)</option>
+                    <option value="30/70">30/70 (Write-heavy)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Workload Type</label>
+                  <select
+                    name="type"
+                    value={workload.type}
+                    onChange={handleWorkloadChange}
+                    className="w-full p-2 border rounded"
+                  >
+                    <option value="OLTP">OLTP (Transactional)</option>
+                    <option value="OLAP">OLAP (Analytical)</option>
+                    <option value="Mixed">Mixed (HTAP)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Data Growth Rate (%/month)</label>
                   <input
                     type="number"
-                    name="tiflashNodes"
-                    value={tidbCluster.tiflashNodes}
+                    name="dataGrowthRate"
+                    value={workload.dataGrowthRate}
+                    onChange={handleWorkloadChange}
+                    className="w-full p-2 border rounded"
+                    min="0"
+                    max="100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Peak Concurrent Connections</label>
+                  <input
+                    type="number"
+                    name="concurrentConnections"
+                    value={workload.concurrentConnections}
+                    onChange={handleWorkloadChange}
+                    className="w-full p-2 border rounded"
+                    min="1"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <div className="flex items-center mb-2">
+                    <input
+                      type="checkbox"
+                      name="trafficSpikes"
+                      checked={workload.trafficSpikes}
+                      onChange={handleWorkloadChange}
+                      className="mr-2"
+                    />
+                    <label>Traffic Spikes</label>
+                  </div>
+                  {workload.trafficSpikes && (
+                    <div className="flex items-center">
+                      <label className="mr-2">Peak-to-Normal Ratio:</label>
+                      <input
+                        type="number"
+                        name="peakRatio"
+                        value={workload.peakRatio}
+                        onChange={handleWorkloadChange}
+                        className="w-16 p-2 border rounded"
+                        min="1"
+                        step="0.5"
+                      />
+                      <span className="ml-2">x</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            
+            {/* TiDB Cluster Configuration */}
+            <div className="bg-green-50 p-4 rounded shadow">
+              <h2 className="text-xl font-semibold mb-4">TiDB Cluster Configuration</h2>
+              
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="block text-sm mb-1">TiDB Nodes</label>
+                  <input
+                    type="number"
+                    name="tidbNodes"
+                    value={tidbCluster.tidbNodes}
                     onChange={handleTidbClusterChange}
                     className="w-full p-2 border rounded"
-                    min="2"
+                    min="3"
                   />
                 </div>
-              )}
-              <div>
-                <label className="block text-sm mb-1">EKS Clusters</label>
-                <input
-                  type="number"
-                  name="eksClusterCount"
-                  value={tidbCluster.eksClusterCount}
-                  onChange={handleTidbClusterChange}
-                  className="w-full p-2 border rounded"
-                  min="1"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">K8s Worker Nodes</label>
-                <input
-                  type="number"
-                  name="k8sWorkerNodes"
-                  value={tidbCluster.k8sWorkerNodes}
-                  onChange={handleTidbClusterChange}
-                  className="w-full p-2 border rounded"
-                  min="3"
-                />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Data Replication Factor</label>
-                <div className="flex items-center">
+                <div>
+                  <label className="block text-sm mb-1">TiKV Nodes</label>
                   <input
                     type="number"
-                    name="dataReplicationFactor"
-                    value={tidbCluster.dataReplicationFactor}
+                    name="tikvNodes"
+                    value={tidbCluster.tikvNodes}
                     onChange={handleTidbClusterChange}
-                    className="w-24 p-2 border rounded"
+                    className="w-full p-2 border rounded"
                     min="3"
-                    max="5"
                   />
-                  <span className="ml-2 text-sm text-gray-600">(Default: 3, min: 3)</span>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">PD Nodes</label>
+                  <input
+                    type="number"
+                    name="pdNodes"
+                    value={tidbCluster.pdNodes}
+                    onChange={handleTidbClusterChange}
+                    className="w-full p-2 border rounded"
+                    min="3"
+                  />
+                </div>
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="useTiflash"
+                    checked={tidbCluster.useTiflash}
+                    onChange={handleTidbClusterChange}
+                    className="mr-2"
+                  />
+                  <label>Use TiFlash (HTAP)</label>
+                </div>
+                {tidbCluster.useTiflash && (
+                  <div>
+                    <label className="block text-sm mb-1">TiFlash Nodes</label>
+                    <input
+                      type="number"
+                      name="tiflashNodes"
+                      value={tidbCluster.tiflashNodes}
+                      onChange={handleTidbClusterChange}
+                      className="w-full p-2 border rounded"
+                      min="2"
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm mb-1">EKS Clusters</label>
+                  <input
+                    type="number"
+                    name="eksClusterCount"
+                    value={tidbCluster.eksClusterCount}
+                    onChange={handleTidbClusterChange}
+                    className="w-full p-2 border rounded"
+                    min="1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">K8s Worker Nodes</label>
+                  <input
+                    type="number"
+                    name="k8sWorkerNodes"
+                    value={tidbCluster.k8sWorkerNodes}
+                    onChange={handleTidbClusterChange}
+                    className="w-full p-2 border rounded"
+                    min="3"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Data Replication Factor</label>
+                  <div className="flex items-center">
+                    <input
+                      type="number"
+                      name="dataReplicationFactor"
+                      value={tidbCluster.dataReplicationFactor}
+                      onChange={handleTidbClusterChange}
+                      className="w-24 p-2 border rounded"
+                      min="3"
+                      max="5"
+                    />
+                    <span className="ml-2 text-sm text-gray-600">(Default: 3, min: 3)</span>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-          
-          {/* EC2 Instance Types */}
-          <div className="bg-yellow-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">EC2 Instance Selection</h2>
             
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm mb-1">TiDB Server Instances</label>
-                <select
-                  name="tidbInstanceType"
-                  value={instances.tidbInstanceType}
-                  onChange={handleInstanceChange}
-                  className="w-full p-2 border rounded"
-                >
-                  {Object.keys(ec2InstanceTypes).map(type => (
-                    <option key={type} value={type}>
-                      {type} ({ec2InstanceTypes[type].vCPU} vCPU, {ec2InstanceTypes[type].memory} GB)
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm mb-1">TiKV Server Instances</label>
-                <select
-                  name="tikvInstanceType"
-                  value={instances.tikvInstanceType}
-                  onChange={handleInstanceChange}
-                  className="w-full p-2 border rounded"
-                >
-                  {Object.keys(ec2InstanceTypes).map(type => (
-                    <option key={type} value={type}>
-                      {type} ({ec2InstanceTypes[type].vCPU} vCPU, {ec2InstanceTypes[type].memory} GB
-                      {ec2InstanceTypes[type].nvme ? `, ${ec2InstanceTypes[type].nvme} GB NVMe` : ''})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm mb-1">PD Server Instances</label>
-                <select
-                  name="pdInstanceType"
-                  value={instances.pdInstanceType}
-                  onChange={handleInstanceChange}
-                  className="w-full p-2 border rounded"
-                >
-                  {Object.keys(ec2InstanceTypes).map(type => (
-                    <option key={type} value={type}>
-                      {type} ({ec2InstanceTypes[type].vCPU} vCPU, {ec2InstanceTypes[type].memory} GB)
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {tidbCluster.useTiflash && (
+            {/* EC2 Instance Types */}
+            <div className="bg-yellow-50 p-4 rounded shadow">
+              <h2 className="text-xl font-semibold mb-4">EC2 Instance Selection</h2>
+              
+              <div className="space-y-3">
+                <div className="bg-yellow-100 p-2 rounded mb-4">
+                  <p className="text-sm font-medium">Instance type recommendations are automatically adjusted based on PostgreSQL configuration.</p>
+                </div>
+                
                 <div>
-                  <label className="block text-sm mb-1">TiFlash Server Instances</label>
+                  <label className="block text-sm mb-1">TiDB Server Instances</label>
                   <select
-                    name="tiflashInstanceType"
-                    value={instances.tiflashInstanceType}
+                    name="tidbInstanceType"
+                    value={instances.tidbInstanceType}
+                    onChange={handleInstanceChange}
+                    className="w-full p-2 border rounded"
+                  >
+                    {Object.keys(ec2InstanceTypes).map(type => (
+                      <option key={type} value={type}>
+                        {type} ({ec2InstanceTypes[type].vCPU} vCPU, {ec2InstanceTypes[type].memory} GB)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">TiKV Server Instances</label>
+                  <select
+                    name="tikvInstanceType"
+                    value={instances.tikvInstanceType}
                     onChange={handleInstanceChange}
                     className="w-full p-2 border rounded"
                   >
@@ -722,505 +953,420 @@ const TiDBMigrationCalculator = () => {
                     ))}
                   </select>
                 </div>
-              )}
-              <div>
-                <label className="block text-sm mb-1">Monitoring Instance</label>
-                <select
-                  name="monitoringInstanceType"
-                  value={instances.monitoringInstanceType}
-                  onChange={handleInstanceChange}
-                  className="w-full p-2 border rounded"
-                >
-                  {Object.keys(ec2InstanceTypes).map(type => (
-                    <option key={type} value={type}>
-                      {type} ({ec2InstanceTypes[type].vCPU} vCPU, {ec2InstanceTypes[type].memory} GB)
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-          
-          {/* Storage Configuration */}
-          <div className="bg-red-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">Storage Configuration</h2>
-            
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm mb-1">TiDB Server Storage</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <select
-                    name="tidbEbsType"
-                    value={storage.tidbEbsType}
-                    onChange={handleStorageChange}
-                    className="w-full p-2 border rounded"
-                  >
-                    {Object.keys(ebsVolumeTypes).map(type => (
-                      <option key={type} value={type}>{type}</option>
-                    ))}
-                  </select>
-                  <div className="flex items-center">
-                    <input
-                      type="number"
-                      name="tidbEbsSize"
-                      value={storage.tidbEbsSize}
-                      onChange={handleStorageChange}
-                      className="w-full p-2 border rounded"
-                      min="0"
-                    />
-                    <span className="ml-2">GB</span>
-                  </div>
-                </div>
-              </div>
-              
-              <div>
-                <div className="flex items-center mb-2">
-                  <input
-                    type="checkbox"
-                    name="tikvUseInstanceStore"
-                    checked={storage.tikvUseInstanceStore}
-                    onChange={handleStorageChange}
-                    className="mr-2"
-                  />
-                  <label>Use Instance Store for TiKV (if available)</label>
-                </div>
-                {tikvUsingInstanceStore && (
-                  <div className="bg-gray-100 p-2 rounded mb-2">
-                    <span className="text-sm">
-                      Using {tikvInstanceStorageSize} GB NVMe storage from i3 instance
-                    </span>
-                  </div>
-                )}
-                <label className="block text-sm mb-1">Additional TiKV EBS Storage</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <select
-                    name="tikvAdditionalEbsType"
-                    value={storage.tikvAdditionalEbsType}
-                    onChange={handleStorageChange}
-                    className="w-full p-2 border rounded"
-                  >
-                    {Object.keys(ebsVolumeTypes).map(type => (
-                      <option key={type} value={type}>{type}</option>
-                    ))}
-                  </select>
-                  <div className="flex items-center">
-                    <input
-                      type="number"
-                      name="tikvAdditionalEbsSize"
-                      value={storage.tikvAdditionalEbsSize}
-                      onChange={handleStorageChange}
-                      className="w-full p-2 border rounded"
-                      min="0"
-                    />
-                    <span className="ml-2">GB</span>
-                  </div>
-                </div>
-              </div>
-              
-              <div>
-                <label className="block text-sm mb-1">PD Server Storage</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <select
-                    name="pdEbsType"
-                    value={storage.pdEbsType}
-                    onChange={handleStorageChange}
-                    className="w-full p-2 border rounded"
-                  >
-                    {Object.keys(ebsVolumeTypes).map(type => (
-                      <option key={type} value={type}>{type}</option>
-                    ))}
-                  </select>
-                  <div className="flex items-center">
-                    <input
-                      type="number"
-                      name="pdEbsSize"
-                      value={storage.pdEbsSize}
-                      onChange={handleStorageChange}
-                      className="w-full p-2 border rounded"
-                      min="0"
-                    />
-                    <span className="ml-2">GB</span>
-                  </div>
-                </div>
-              </div>
-              
-              {tidbCluster.useTiflash && (
                 <div>
-                  <label className="block text-sm mb-1">TiFlash Storage</label>
-                  <div className="grid grid-cols-2 gap-2">
+                  <label className="block text-sm mb-1">PD Server Instances</label>
+                  <select
+                    name="pdInstanceType"
+                    value={instances.pdInstanceType}
+                    onChange={handleInstanceChange}
+                    className="w-full p-2 border rounded"
+                  >
+                    {Object.keys(ec2InstanceTypes).map(type => (
+                      <option key={type} value={type}>
+                        {type} ({ec2InstanceTypes[type].vCPU} vCPU, {ec2InstanceTypes[type].memory} GB)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {tidbCluster.useTiflash && (
+                  <div>
+                    <label className="block text-sm mb-1">TiFlash Server Instances</label>
                     <select
-                      name="tiflashEbsType"
-                      value={storage.tiflashEbsType}
-                      onChange={handleStorageChange}
+                      name="tiflashInstanceType"
+                      value={instances.tiflashInstanceType}
+                      onChange={handleInstanceChange}
                       className="w-full p-2 border rounded"
                     >
-                      {Object.keys(ebsVolumeTypes).map(type => (
-                        <option key={type} value={type}>{type}</option>
+                      {Object.keys(ec2InstanceTypes).map(type => (
+                        <option key={type} value={type}>
+                          {type} ({ec2InstanceTypes[type].vCPU} vCPU, {ec2InstanceTypes[type].memory} GB
+                          {ec2InstanceTypes[type].nvme ? `, ${ec2InstanceTypes[type].nvme} GB NVMe` : ''})
+                        </option>
                       ))}
                     </select>
-                    <div className="flex items-center">
-                      <input
-                        type="number"
-                        name="tiflashEbsSize"
-                        value={storage.tiflashEbsSize}
-                        onChange={handleStorageChange}
-                        className="w-full p-2 border rounded"
-                        min="0"
-                      />
-                      <span className="ml-2">GB</span>
-                    </div>
                   </div>
+                )}
+                <div>
+                  <label className="block text-sm mb-1">Monitoring Instance</label>
+                  <select
+                    name="monitoringInstanceType"
+                    value={instances.monitoringInstanceType}
+                    onChange={handleInstanceChange}
+                    className="w-full p-2 border rounded"
+                  >
+                    {Object.keys(ec2InstanceTypes).map(type => (
+                      <option key={type} value={type}>
+                        {type} ({ec2InstanceTypes[type].vCPU} vCPU, {ec2InstanceTypes[type].memory} GB)
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              )}
+              </div>
             </div>
           </div>
           
-          {/* Operational Costs */}
-          <div className="bg-indigo-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">Operational Costs</h2>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div className="flex items-center mb-2">
-                <input
-                  type="checkbox"
-                  name="backupToS3"
-                  checked={operational.backupToS3}
-                  onChange={handleOperationalChange}
-                  className="mr-2"
-                />
-                <label>Backup to S3</label>
-              </div>
-              {operational.backupToS3 && (
-                <div>
-                  <label className="block text-sm mb-1">Backup Size (GB)</label>
-                  <input
-                    type="number"
-                    name="backupSizeGB"
-                    value={operational.backupSizeGB}
-                    onChange={handleOperationalChange}
-                    className="w-full p-2 border rounded"
-                    min="0"
-                  />
+          {/* Results Section */}
+          <div className="space-y-6">
+            {/* Cost Summary Card */}
+            <div className="bg-white p-4 rounded shadow">
+              <h2 className="text-xl font-semibold mb-4">Cost Summary</h2>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-4 bg-blue-50 rounded flex flex-col items-center">
+                  <div className="text-sm text-gray-600 mb-1">PostgreSQL Monthly</div>
+                  <div className="text-3xl font-bold text-blue-700">${postgresMonthlyCost.toFixed(2)}</div>
                 </div>
-              )}
-              <div>
-                <label className="block text-sm mb-1">Network Traffic (GB/month)</label>
-                <input
-                  type="number"
-                  name="networkTrafficGB"
-                  value={operational.networkTrafficGB}
-                  onChange={handleOperationalChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                />
+                <div className="p-4 bg-green-50 rounded flex flex-col items-center">
+                  <div className="text-sm text-gray-600 mb-1">TiDB Monthly</div>
+                  <div className="text-3xl font-bold text-green-700">${totalMonthlyCost.toFixed(2)}</div>
+                </div>
+                <div className="p-4 bg-purple-50 rounded flex flex-col items-center">
+                  <div className="text-sm text-gray-600 mb-1">Monthly Savings</div>
+                  <div className={`text-3xl font-bold ${monthlySavings >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                    ${monthlySavings.toFixed(2)}
+                  </div>
+                </div>
+                <div className="p-4 bg-yellow-50 rounded flex flex-col items-center">
+                  <div className="text-sm text-gray-600 mb-1">Savings %</div>
+                  <div className={`text-3xl font-bold ${savingsPercentage >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                    {savingsPercentage.toFixed(1)}%
+                  </div>
+                </div>
+                {monthlySavings > 0 && (
+                  <div className="col-span-2 p-4 bg-orange-50 rounded flex flex-col items-center">
+                    <div className="text-sm text-gray-600 mb-1">Payback Period</div>
+                    <div className="text-3xl font-bold text-orange-700">
+                      {isFinite(paybackPeriodMonths) ? `${paybackPeriodMonths.toFixed(1)} months` : 'N/A'}
+                    </div>
+                  </div>
+                )}
               </div>
-              <div>
-                <label className="block text-sm mb-1">EKS Cluster Cost ($)</label>
-                <input
-                  type="number"
-                  name="eksClusterCost"
-                  value={operational.eksClusterCost}
-                  onChange={handleOperationalChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                />
+            </div>
+            
+            {/* PostgreSQL to TiDB Mapping */}
+            <div className="bg-indigo-50 p-4 rounded shadow">
+              <h2 className="text-xl font-semibold mb-4">PostgreSQL to TiDB Mapping</h2>
+              <div className="overflow-hidden shadow rounded-lg">
+                <table className="min-w-full bg-white">
+                  <thead className="bg-indigo-100">
+                    <tr>
+                      <th className="py-2 px-3 text-left text-sm font-medium text-gray-600">Resource Type</th>
+                      <th className="py-2 px-3 text-left text-sm font-medium text-gray-600">PostgreSQL</th>
+                      <th className="py-2 px-3 text-left text-sm font-medium text-gray-600">TiDB Equivalent</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    <tr>
+                      <td className="py-2 px-3 text-sm text-gray-700">Instance Type</td>
+                      <td className="py-2 px-3 text-sm text-blue-700">{postgres.instanceType}</td>
+                      <td className="py-2 px-3 text-sm text-green-700">{instances.tidbInstanceType} (TiDB) / {instances.tikvInstanceType} (TiKV)</td>
+                    </tr>
+                    <tr>
+                      <td className="py-2 px-3 text-sm text-gray-700">vCPU</td>
+                      <td className="py-2 px-3 text-sm text-blue-700">
+                        {postgresInstanceTypes[postgres.instanceType]?.vCPU * postgres.instanceCount} 
+                        ({postgresInstanceTypes[postgres.instanceType]?.vCPU} x {postgres.instanceCount})
+                      </td>
+                      <td className="py-2 px-3 text-sm text-green-700">
+                        {ec2InstanceTypes[instances.tidbInstanceType]?.vCPU * tidbCluster.tidbNodes + 
+                         ec2InstanceTypes[instances.tikvInstanceType]?.vCPU * tidbCluster.tikvNodes + 
+                         ec2InstanceTypes[instances.pdInstanceType]?.vCPU * tidbCluster.pdNodes}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="py-2 px-3 text-sm text-gray-700">Memory (GB)</td>
+                      <td className="py-2 px-3 text-sm text-blue-700">
+                        {postgresInstanceTypes[postgres.instanceType]?.memory * postgres.instanceCount}
+                        ({postgresInstanceTypes[postgres.instanceType]?.memory} x {postgres.instanceCount})
+                      </td>
+                      <td className="py-2 px-3 text-sm text-green-700">
+                        {ec2InstanceTypes[instances.tidbInstanceType]?.memory * tidbCluster.tidbNodes + 
+                         ec2InstanceTypes[instances.tikvInstanceType]?.memory * tidbCluster.tikvNodes + 
+                         ec2InstanceTypes[instances.pdInstanceType]?.memory * tidbCluster.pdNodes}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="py-2 px-3 text-sm text-gray-700">Storage (GB)</td>
+                      <td className="py-2 px-3 text-sm text-blue-700">{postgres.storageGB}</td>
+                      <td className="py-2 px-3 text-sm text-green-700">
+                        {(tidbCluster.tidbNodes * storage.tidbEbsSize) + 
+                         (tidbCluster.tikvNodes * (tikvInstanceStorageSize + storage.tikvAdditionalEbsSize)) + 
+                         (tidbCluster.pdNodes * storage.pdEbsSize) + 
+                         (tidbCluster.tiflashNodes * storage.tiflashEbsSize)}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="py-2 px-3 text-sm text-gray-700">Nodes</td>
+                      <td className="py-2 px-3 text-sm text-blue-700">
+                        {postgres.instanceCount} primary + {postgres.readReplicas} replicas
+                      </td>
+                      <td className="py-2 px-3 text-sm text-green-700">
+                        {tidbCluster.tidbNodes} TiDB + {tidbCluster.tikvNodes} TiKV + {tidbCluster.pdNodes} PD
+                        {tidbCluster.useTiflash ? ` + ${tidbCluster.tiflashNodes} TiFlash` : ''}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-              <div>
-                <label className="block text-sm mb-1">EKS Monitoring Tools ($)</label>
-                <input
-                  type="number"
-                  name="eksMonitoringCost"
-                  value={operational.eksMonitoringCost}
-                  onChange={handleOperationalChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                />
+            </div>
+            
+            {/* Cost Breakdown */}
+            <div className="bg-yellow-50 p-4 rounded shadow">
+              <h2 className="text-xl font-semibold mb-4">TiDB Monthly Cost Breakdown</h2>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={comparisonData.costBreakdown}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis tickFormatter={formatCurrency} />
+                    <Tooltip formatter={formatCurrency} />
+                    <Bar dataKey="value" fill="#4f46e5" />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
-              <div>
-                <label className="block text-sm mb-1">Migration Cost ($)</label>
-                <input
-                  type="number"
-                  name="migrationCost"
-                  value={operational.migrationCost}
-                  onChange={handleOperationalChange}
-                  className="w-full p-2 border rounded"
-                  min="0"
-                />
+              <div className="mt-4 text-sm text-center text-gray-600">
+                Total Monthly Cost: ${totalMonthlyCost.toFixed(2)}
               </div>
             </div>
           </div>
         </div>
-        
-        {/* Results Section */}
+      )}
+      
+      {/* Impact Analysis Tab */}
+      {activeTab === 'visualizations' && (
         <div className="space-y-6">
-          {/* Total TiDB Resources */}
-          <div className="bg-green-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">Total Resources</h2>
-            <div className="grid grid-cols-3 gap-4 text-center">
-              <div className="bg-white p-3 rounded shadow">
-                <div className="text-gray-600 text-sm">Estimated TiDB Nodes</div>
-                <div className="text-2xl font-bold">{tidbCluster.tidbNodes}</div>
-              </div>
-              <div className="bg-white p-3 rounded shadow">
-                <div className="text-gray-600 text-sm">Estimated TiKV Nodes</div>
-                <div className="text-2xl font-bold">{tidbCluster.tikvNodes}</div>
-              </div>
-              <div className="bg-white p-3 rounded shadow">
-                <div className="text-gray-600 text-sm">Estimated PD Nodes</div>
-                <div className="text-2xl font-bold">{tidbCluster.pdNodes}</div>
-              </div>
-              {tidbCluster.useTiflash && (
-                <div className="bg-white p-3 rounded shadow">
-                  <div className="text-gray-600 text-sm">Estimated TiFlash Nodes</div>
-                  <div className="text-2xl font-bold">{tidbCluster.tiflashNodes}</div>
+          <div className="bg-indigo-50 p-6 rounded shadow">
+            <h2 className="text-xl font-semibold mb-6">PostgreSQL Instance Type Impact on TiDB Resources</h2>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Chart for Instance Type Impact on TiDB Nodes */}
+              <div className="bg-white p-4 rounded shadow">
+                <h3 className="text-lg font-medium mb-3">Number of TiDB Nodes by PostgreSQL Instance Type</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={instanceTypeImpactData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar dataKey="tidbNodes" fill="#4f46e5" name="TiDB Nodes" />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
-              )}
-              <div className="bg-white p-3 rounded shadow">
-                <div className="text-gray-600 text-sm">Total Storage (GB)</div>
-                <div className="text-2xl font-bold">
-                  {(tidbCluster.tidbNodes * storage.tidbEbsSize) + 
-                   (tidbCluster.tikvNodes * (tikvInstanceStorageSize + storage.tikvAdditionalEbsSize)) + 
-                   (tidbCluster.pdNodes * storage.pdEbsSize) + 
-                   (tidbCluster.tiflashNodes * storage.tiflashEbsSize)}
-                </div>
+                <p className="mt-3 text-sm text-gray-600">
+                  Higher vCPU PostgreSQL instances require more TiDB nodes to handle equivalent workload.
+                </p>
               </div>
-              <div className="bg-white p-3 rounded shadow">
-                <div className="text-gray-600 text-sm">K8s Worker Nodes</div>
-                <div className="text-2xl font-bold">{tidbCluster.k8sWorkerNodes}</div>
+              
+              {/* Chart for Instance Type Impact on TiDB Cost */}
+              <div className="bg-white p-4 rounded shadow">
+                <h3 className="text-lg font-medium mb-3">TiDB Compute Cost by PostgreSQL Instance Type</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={instanceTypeImpactData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis tickFormatter={formatCurrency} />
+                      <Tooltip formatter={formatCurrency} />
+                      <Bar dataKey="tidbCost" fill="#10b981" name="TiDB Cost" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="mt-3 text-sm text-gray-600">
+                  Memory-optimized PostgreSQL instances trigger higher-spec TiDB nodes, increasing cost.
+                </p>
               </div>
             </div>
+            
+            {/* Resource Requirements Visualization */}
+            <div className="mt-6 bg-white p-4 rounded shadow">
+              <h3 className="text-lg font-medium mb-3">PostgreSQL to TiDB Resource Mapping</h3>
+              <div className="overflow-hidden shadow rounded-lg">
+                <table className="min-w-full bg-white">
+                  <thead className="bg-indigo-100">
+                    <tr>
+                      <th className="py-2 px-3 text-left text-sm font-medium text-gray-600">PostgreSQL Instance</th>
+                      <th className="py-2 px-3 text-right text-sm font-medium text-gray-600">vCPU</th>
+                      <th className="py-2 px-3 text-right text-sm font-medium text-gray-600">Memory (GB)</th>
+                      <th className="py-2 px-3 text-right text-sm font-medium text-gray-600">Recommended TiDB Instance</th>
+                      <th className="py-2 px-3 text-right text-sm font-medium text-gray-600">TiDB Nodes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {instanceTypeImpactData.map((item, index) => (
+                      <tr key={index} className={index % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
+                        <td className="py-2 px-3 text-sm text-gray-700">{item.name}</td>
+                        <td className="py-2 px-3 text-sm text-right text-gray-700">{item.vCPU}</td>
+                        <td className="py-2 px-3 text-sm text-right text-gray-700">{item.memory}</td>
+                        <td className="py-2 px-3 text-sm text-right text-green-700">{item.instanceType}</td>
+                        <td className="py-2 px-3 text-sm text-right text-green-700">{item.tidbNodes}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-3 text-sm text-gray-600">
+                PostgreSQL instances with higher memory trigger recommendations for memory-optimized TiDB instances (r5.2xlarge or r5.4xlarge).
+              </p>
+            </div>
           </div>
-          
-          {/* Cost Breakdown */}
-          <div className="bg-yellow-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">Monthly Cost Breakdown</h2>
-            <div className="overflow-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="bg-yellow-100">
-                    <th className="p-2 text-left">Category</th>
-                    <th className="p-2 text-left">Subcategory</th>
-                    <th className="p-2 text-right">Cost ($)</th>
+        </div>
+      )}
+      
+      {/* Instance Comparison Tab */}
+      {activeTab === 'comparison' && (
+        <div className="space-y-6">
+          <div className="bg-indigo-50 p-6 rounded shadow">
+            <h2 className="text-xl font-semibold mb-6">PostgreSQL vs. TiDB Configuration Comparison</h2>
+            
+            <div className="overflow-hidden shadow rounded-lg">
+              <table className="min-w-full bg-white">
+                <thead className="bg-indigo-100">
+                  <tr>
+                    <th className="py-3 px-4 text-left text-sm font-medium text-gray-600">PostgreSQL Config</th>
+                    <th className="py-3 px-4 text-right text-sm font-medium text-gray-600">vCPU</th>
+                    <th className="py-3 px-4 text-right text-sm font-medium text-gray-600">Memory (GB)</th>
+                    <th className="py-3 px-4 text-right text-sm font-medium text-gray-600">Monthly Cost</th>
+                    <th className="py-3 px-4 text-right text-sm font-medium text-gray-600">TiDB Monthly Cost</th>
+                    <th className="py-3 px-4 text-right text-sm font-medium text-gray-600">Savings</th>
+                    <th className="py-3 px-4 text-right text-sm font-medium text-gray-600">Savings %</th>
                   </tr>
                 </thead>
-                <tbody>
-                  <tr className="border-b">
-                    <td className="p-2">EC2</td>
-                    <td className="p-2">TiDB Servers ({tidbCluster.tidbNodes}x {instances.tidbInstanceType})</td>
-                    <td className="p-2 text-right">${(tidbInstanceCost * tidbCluster.tidbNodes).toFixed(2)}</td>
-                  </tr>
-                  <tr className="border-b">
-                    <td className="p-2">EC2</td>
-                    <td className="p-2">TiKV Servers ({tidbCluster.tikvNodes}x {instances.tikvInstanceType})</td>
-                    <td className="p-2 text-right">${(tikvInstanceCost * tidbCluster.tikvNodes).toFixed(2)}</td>
-                  </tr>
-                  <tr className="border-b">
-                    <td className="p-2">EC2</td>
-                    <td className="p-2">PD Servers ({tidbCluster.pdNodes}x {instances.pdInstanceType})</td>
-                    <td className="p-2 text-right">${(pdInstanceCost * tidbCluster.pdNodes).toFixed(2)}</td>
-                  </tr>
-                  {tidbCluster.useTiflash && (
-                    <tr className="border-b">
-                      <td className="p-2">EC2</td>
-                      <td className="p-2">TiFlash Servers ({tidbCluster.tiflashNodes}x {instances.tiflashInstanceType})</td>
-                      <td className="p-2 text-right">${(tiflashInstanceCost * tidbCluster.tiflashNodes).toFixed(2)}</td>
+                <tbody className="divide-y divide-gray-200">
+                  {comparisonConfigs.map((config, index) => (
+                    <tr key={index} className={index % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
+                      <td className="py-3 px-4 text-sm text-gray-700">
+                        <div className="font-medium">{config.name}</div>
+                        <div className="text-xs text-gray-500">{config.instanceType} x2</div>
+                      </td>
+                      <td className="py-3 px-4 text-sm text-right text-gray-700">{config.cpu * 2}</td>
+                      <td className="py-3 px-4 text-sm text-right text-gray-700">{config.memory * 2}</td>
+                      <td className="py-3 px-4 text-sm text-right text-blue-700 font-medium">${config.monthlyCost.toFixed(2)}</td>
+                      <td className="py-3 px-4 text-sm text-right text-green-700 font-medium">${config.tidb.monthlyCost.toFixed(2)}</td>
+                      <td className="py-3 px-4 text-sm text-right font-medium" 
+                          style={{ color: config.tidb.savings >= 0 ? '#047857' : '#b91c1c' }}>
+                        ${config.tidb.savings.toFixed(2)}
+                      </td>
+                      <td className="py-3 px-4 text-sm text-right font-medium"
+                          style={{ color: config.tidb.savingsPercentage >= 0 ? '#047857' : '#b91c1c' }}>
+                        {config.tidb.savingsPercentage.toFixed(1)}%
+                      </td>
                     </tr>
-                  )}
-                  <tr className="border-b">
-                    <td className="p-2">EC2</td>
-                    <td className="p-2">Monitoring (1x {instances.monitoringInstanceType})</td>
-                    <td className="p-2 text-right">${monitoringInstanceCost.toFixed(2)}</td>
-                  </tr>
-                  <tr className="border-b">
-                    <td className="p-2">Storage</td>
-                    <td className="p-2">TiDB EBS Volumes ({storage.tidbEbsType})</td>
-                    <td className="p-2 text-right">${tidbStorageCost.toFixed(2)}</td>
-                  </tr>
-                  {storage.tikvAdditionalEbsSize > 0 && (
-                    <tr className="border-b">
-                      <td className="p-2">Storage</td>
-                      <td className="p-2">TiKV Additional EBS ({storage.tikvAdditionalEbsType})</td>
-                      <td className="p-2 text-right">${tikvAdditionalStorageCost.toFixed(2)}</td>
-                    </tr>
-                  )}
-                  <tr className="border-b">
-                    <td className="p-2">Storage</td>
-                    <td className="p-2">PD EBS Volumes ({storage.pdEbsType})</td>
-                    <td className="p-2 text-right">${pdStorageCost.toFixed(2)}</td>
-                  </tr>
-                  {tidbCluster.useTiflash && (
-                    <tr className="border-b">
-                      <td className="p-2">Storage</td>
-                      <td className="p-2">TiFlash EBS Volumes ({storage.tiflashEbsType})</td>
-                      <td className="p-2 text-right">${tiflashStorageCost.toFixed(2)}</td>
-                    </tr>
-                  )}
-                  {operational.backupToS3 && (
-                    <tr className="border-b">
-                      <td className="p-2">Backup</td>
-                      <td className="p-2">S3 Storage ({operational.backupSizeGB} GB)</td>
-                      <td className="p-2 text-right">${s3BackupCost.toFixed(2)}</td>
-                    </tr>
-                  )}
-                  <tr className="border-b">
-                    <td className="p-2">Network</td>
-                    <td className="p-2">Data Transfer ({operational.networkTrafficGB} GB)</td>
-                    <td className="p-2 text-right">${networkCost.toFixed(2)}</td>
-                  </tr>
-                  <tr className="border-b">
-                    <td className="p-2">Kubernetes</td>
-                    <td className="p-2">EKS Cluster ({tidbCluster.eksClusterCount}x)</td>
-                    <td className="p-2 text-right">${eksClusterCost.toFixed(2)}</td>
-                  </tr>
-                  <tr className="border-b">
-                    <td className="p-2">Kubernetes</td>
-                    <td className="p-2">EKS Monitoring Tools</td>
-                    <td className="p-2 text-right">${eksMonitoringCost.toFixed(2)}</td>
-                  </tr>
-                  <tr className="bg-yellow-100 font-bold">
-                    <td className="p-2">Total</td>
-                    <td className="p-2">Monthly Cost</td>
-                    <td className="p-2 text-right">${totalMonthlyCost.toFixed(2)}</td>
-                  </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-          </div>
-          
-          {/* One-time Costs */}
-          <div className="bg-orange-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">One-time Costs</h2>
-            <div className="overflow-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="bg-orange-100">
-                    <th className="p-2 text-left">Category</th>
-                    <th className="p-2 text-right">Cost ($)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="border-b">
-                    <td className="p-2">Migration</td>
-                    <td className="p-2 text-right">${operational.migrationCost.toFixed(2)}</td>
-                  </tr>
-                  <tr className="bg-orange-100 font-bold">
-                    <td className="p-2">Total One-time Costs</td>
-                    <td className="p-2 text-right">${oneTimeCosts.toFixed(2)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          
-          {/* Comparative Analysis */}
-          <div className="bg-blue-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">Cost Comparison</h2>
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4 text-center">
-                <div className="bg-white p-3 rounded shadow">
-                  <div className="text-gray-600 text-sm">Current PostgreSQL Monthly Cost</div>
-                  <div className="text-2xl font-bold">${postgresMonthlyCost.toFixed(2)}</div>
-                </div>
-                <div className="bg-white p-3 rounded shadow">
-                  <div className="text-gray-600 text-sm">TiDB Monthly Cost</div>
-                  <div className="text-2xl font-bold">${totalMonthlyCost.toFixed(2)}</div>
-                </div>
-                <div className="bg-white p-3 rounded shadow">
-                  <div className="text-gray-600 text-sm">Monthly Savings</div>
-                  <div className={`text-2xl font-bold ${monthlySavings >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    ${monthlySavings.toFixed(2)}
+            
+            <div className="mt-6 bg-white p-4 rounded shadow">
+              <h3 className="text-lg font-medium mb-3">TiDB Configuration by PostgreSQL Size</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {comparisonConfigs.map((config, index) => (
+                  <div key={index} className="p-4 border rounded shadow-sm">
+                    <div className="text-lg font-medium mb-2">{config.name}</div>
+                    <div className="text-sm mb-4">PostgreSQL: {config.instanceType} x2</div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between">
+                        <span className="text-sm text-gray-600">TiDB Nodes:</span>
+                        <span className="text-sm font-medium">{config.tidb.tidbNodes}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-sm text-gray-600">Instance Type:</span>
+                        <span className="text-sm font-medium">{config.tidb.instanceType}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-sm text-gray-600">Monthly Cost:</span>
+                        <span className="text-sm font-medium">${config.tidb.monthlyCost.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-sm text-gray-600">Savings:</span>
+                        <span className="text-sm font-medium" style={{ color: config.tidb.savings >= 0 ? '#047857' : '#b91c1c' }}>
+                          ${config.tidb.savings.toFixed(2)} ({config.tidb.savingsPercentage.toFixed(1)}%)
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="bg-white p-3 rounded shadow">
-                  <div className="text-gray-600 text-sm">Savings Percentage</div>
-                  <div className={`text-2xl font-bold ${savingsPercentage >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {savingsPercentage.toFixed(1)}%
-                  </div>
-                </div>
-              </div>
-              
-              {monthlySavings > 0 && (
-                <div className="bg-white p-3 rounded shadow">
-                  <div className="text-gray-600 text-sm">Payback Period for One-time Costs</div>
-                  <div className="text-2xl font-bold">
-                    {isFinite(paybackPeriodMonths) ? 
-                      `${paybackPeriodMonths.toFixed(1)} months` : 
-                      'N/A'}
-                  </div>
-                </div>
-              )}
-              
-              <div className="bg-white p-3 rounded shadow">
-                <div className="text-gray-600 text-sm mb-2">Key TiDB Sizing Guidelines</div>
-                <ul className="list-disc pl-5 space-y-1 text-sm">
-                  <li>TiDB (SQL layer): Min 8 CPU cores per node recommended</li>
-                  <li>TiKV (Storage): Best on i3/i3en instances with NVMe storage</li>
-                  <li>PD (Placement Driver): Min 3 nodes required for quorum</li>
-                  <li>TiKV Storage: Keep below 4TB for PCIe SSDs, 1.5TB for regular SSDs</li>
-                  <li>TiDB nodes: Performance scales linearly up to 8 nodes</li>
-                  <li>TiKV nodes: Always deploy in multiples of 3 across AZs</li>
-                  <li>TiFlash (Analytics): Min 2 nodes for high availability when used</li>
-                </ul>
+                ))}
               </div>
             </div>
           </div>
-          
-          {/* Recommendations */}
-          <div className="bg-indigo-50 p-4 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">Recommendations</h2>
-            <div className="bg-white p-3 rounded shadow">
-              <ul className="list-disc pl-5 space-y-2">
-                {tidbCluster.tidbNodes < 3 && (
-                  <li className="text-red-600">Increase TiDB nodes to at least 3 for high availability</li>
-                )}
-                {tidbCluster.tikvNodes < 3 && (
-                  <li className="text-red-600">Increase TiKV nodes to at least 3 for data redundancy</li>
-                )}
-                {tidbCluster.pdNodes < 3 && (
-                  <li className="text-red-600">Increase PD nodes to at least 3 for quorum</li>
-                )}
-                {tidbCluster.tikvNodes % 3 !== 0 && (
-                  <li className="text-red-600">TiKV nodes should be in multiples of 3 for proper distribution across AZs</li>
-                )}
-                {tidbCluster.k8sWorkerNodes < 6 && (
-                  <li className="text-red-600">Consider increasing Kubernetes worker nodes to at least 6 for proper distribution</li>
-                )}
-                {workload.type === 'OLAP' && !tidbCluster.useTiflash && (
-                  <li>Consider using TiFlash for analytical workloads</li>
-                )}
-                {tidbCluster.useTiflash && tidbCluster.tiflashNodes < 2 && (
-                  <li className="text-red-600">Increase TiFlash nodes to at least 2 for high availability</li>
-                )}
-                {storage.tikvUseInstanceStore && tikvInstanceStorageSize === 0 && (
-                  <li className="text-red-600">Selected TiKV instance type doesn't have instance store. Choose i3 family or disable 'Use Instance Store'</li>
-                )}
-                {storage.tikvUseInstanceStore && tikvInstanceStorageSize > 0 && tikvInstanceStorageSize > 4000 && (
-                  <li className="text-yellow-600">TiKV storage size exceeds 4TB per node. Consider using more nodes with smaller storage.</li>
-                )}
-                {!storage.tikvUseInstanceStore && storage.tikvAdditionalEbsSize > 1500 && (
-                  <li className="text-yellow-600">TiKV EBS size exceeds 1.5TB. Consider using NVMe instance store for better performance.</li>
-                )}
-                {!operational.backupToS3 && (
-                  <li>Consider enabling backups to S3 for disaster recovery</li>
-                )}
-                {tidbCluster.availabilityZones < 3 && (
-                  <li className="text-red-600">TiDB requires at least 3 availability zones for high availability</li>
-                )}
-                <li>Use i3 instance family for TiKV nodes to benefit from NVMe storage</li>
-                <li>Use gp3 volumes for better price/performance ratio compared to gp2</li>
-                <li>Consider reserving at least 8 vCPU per TiDB/TiKV node for production workloads</li>
-                <li>Enable EKS managed node groups for easier worker node management</li>
-                <li>Use EC2 Auto Scaling groups for worker nodes to handle varying loads</li>
-                <li>Consider AWS Load Balancer Controller for TiDB service exposure</li>
+        </div>
+      )}
+      
+      {/* Change History Tab */}
+      {activeTab === 'history' && (
+        <div className="space-y-6">
+          <div className="bg-indigo-50 p-6 rounded shadow">
+            <h2 className="text-xl font-semibold mb-6">Configuration Change History</h2>
+            
+            {comparisonData.history.length === 0 ? (
+              <div className="bg-white p-6 rounded shadow text-center">
+                <p>No changes recorded yet. Try changing the PostgreSQL instance type to see the impact.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {comparisonData.history.map((change, index) => (
+                  <div key={index} className="bg-white p-4 rounded shadow">
+                    <div className="flex justify-between items-center mb-3">
+                      <h3 className="text-lg font-medium">Change #{change.id + 1}</h3>
+                      <span className="text-sm text-gray-500">PostgreSQL Instance Type Change</span>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
+                      <div>
+                        <div className="text-sm text-gray-600">From Instance</div>
+                        <div className="font-medium">{change.from}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-gray-600">To Instance</div>
+                        <div className="font-medium">{change.to}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-gray-600">vCPU Change</div>
+                        <div className="font-medium">{change.vcpuChange}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-gray-600">Memory Change</div>
+                        <div className="font-medium">{change.memoryChange}</div>
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-3 rounded">
+                      <div className="text-sm font-medium mb-2">Impact on TiDB Configuration:</div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <div className="text-sm text-gray-600">TiDB Nodes</div>
+                          <div className="font-medium">{change.tidbNodesChange}</div>
+                        </div>
+                        <div>
+                          <div className="text-sm text-gray-600">TiKV Nodes</div>
+                          <div className="font-medium">{change.tikvNodesChange}</div>
+                        </div>
+                        <div>
+                          <div className="text-sm text-gray-600">Instance Type</div>
+                          <div className="font-medium">{change.instanceTypeChange}</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-3 text-right">
+                      <div className="text-sm text-gray-600">Monthly Cost Impact</div>
+                      <div className="text-lg font-medium">${change.monthlyCost.toFixed(2)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            <div className="mt-6 bg-blue-100 p-4 rounded">
+              <h3 className="font-medium mb-2">Key Observations</h3>
+              <ul className="list-disc pl-5 space-y-1 text-sm">
+                <li>Higher vCPU PostgreSQL instances lead to more TiDB nodes</li>
+                <li>Memory-optimized PostgreSQL instances trigger recommendations for memory-optimized TiDB instances</li>
+                <li>PostgreSQL instance size directly impacts TiDB monthly costs</li>
+                <li>Larger PostgreSQL setups often see better percentage savings with TiDB</li>
               </ul>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
 
-// Render the component to the DOM
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<TiDBMigrationCalculator />);
+export default EnhancedTiDBMigrationCalculator;
