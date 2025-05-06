@@ -800,4 +800,427 @@ const TiDBMigrationCalculator = () => {
                     className="w-full p-2 border rounded"
                   >
                     {Object.keys(ebsVolumeTypes).map(type => (
-                      <option key={type} value=
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
+                  <div className="flex items-center">
+                    <input
+                      type="number"
+                      name="tikvAdditionalEbsSize"
+                      value={storage.tikvAdditionalEbsSize}
+                      onChange={handleStorageChange}
+                      className="w-full p-2 border rounded"
+                      min="0"
+                    />
+                    <span className="ml-2">GB</span>
+                  </div>
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm mb-1">PD Server Storage</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    name="pdEbsType"
+                    value={storage.pdEbsType}
+                    onChange={handleStorageChange}
+                    className="w-full p-2 border rounded"
+                  >
+                    {Object.keys(ebsVolumeTypes).map(type => (
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
+                  <div className="flex items-center">
+                    <input
+                      type="number"
+                      name="pdEbsSize"
+                      value={storage.pdEbsSize}
+                      onChange={handleStorageChange}
+                      className="w-full p-2 border rounded"
+                      min="0"
+                    />
+                    <span className="ml-2">GB</span>
+                  </div>
+                </div>
+              </div>
+              
+              {tidbCluster.useTiflash && (
+                <div>
+                  <label className="block text-sm mb-1">TiFlash Storage</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <select
+                      name="tiflashEbsType"
+                      value={storage.tiflashEbsType}
+                      onChange={handleStorageChange}
+                      className="w-full p-2 border rounded"
+                    >
+                      {Object.keys(ebsVolumeTypes).map(type => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                    </select>
+                    <div className="flex items-center">
+                      <input
+                        type="number"
+                        name="tiflashEbsSize"
+                        value={storage.tiflashEbsSize}
+                        onChange={handleStorageChange}
+                        className="w-full p-2 border rounded"
+                        min="0"
+                      />
+                      <span className="ml-2">GB</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          {/* Operational Costs */}
+          <div className="bg-indigo-50 p-4 rounded shadow">
+            <h2 className="text-xl font-semibold mb-4">Operational Costs</h2>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex items-center mb-2">
+                <input
+                  type="checkbox"
+                  name="backupToS3"
+                  checked={operational.backupToS3}
+                  onChange={handleOperationalChange}
+                  className="mr-2"
+                />
+                <label>Backup to S3</label>
+              </div>
+              {operational.backupToS3 && (
+                <div>
+                  <label className="block text-sm mb-1">Backup Size (GB)</label>
+                  <input
+                    type="number"
+                    name="backupSizeGB"
+                    value={operational.backupSizeGB}
+                    onChange={handleOperationalChange}
+                    className="w-full p-2 border rounded"
+                    min="0"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-sm mb-1">Network Traffic (GB/month)</label>
+                <input
+                  type="number"
+                  name="networkTrafficGB"
+                  value={operational.networkTrafficGB}
+                  onChange={handleOperationalChange}
+                  className="w-full p-2 border rounded"
+                  min="0"
+                />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">EKS Cluster Cost ($)</label>
+                <input
+                  type="number"
+                  name="eksClusterCost"
+                  value={operational.eksClusterCost}
+                  onChange={handleOperationalChange}
+                  className="w-full p-2 border rounded"
+                  min="0"
+                />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">EKS Monitoring Tools ($)</label>
+                <input
+                  type="number"
+                  name="eksMonitoringCost"
+                  value={operational.eksMonitoringCost}
+                  onChange={handleOperationalChange}
+                  className="w-full p-2 border rounded"
+                  min="0"
+                />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Migration Cost ($)</label>
+                <input
+                  type="number"
+                  name="migrationCost"
+                  value={operational.migrationCost}
+                  onChange={handleOperationalChange}
+                  className="w-full p-2 border rounded"
+                  min="0"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        {/* Results Section */}
+        <div className="space-y-6">
+          {/* Total TiDB Resources */}
+          <div className="bg-green-50 p-4 rounded shadow">
+            <h2 className="text-xl font-semibold mb-4">Total Resources</h2>
+            <div className="grid grid-cols-3 gap-4 text-center">
+              <div className="bg-white p-3 rounded shadow">
+                <div className="text-gray-600 text-sm">Estimated TiDB Nodes</div>
+                <div className="text-2xl font-bold">{tidbCluster.tidbNodes}</div>
+              </div>
+              <div className="bg-white p-3 rounded shadow">
+                <div className="text-gray-600 text-sm">Estimated TiKV Nodes</div>
+                <div className="text-2xl font-bold">{tidbCluster.tikvNodes}</div>
+              </div>
+              <div className="bg-white p-3 rounded shadow">
+                <div className="text-gray-600 text-sm">Estimated PD Nodes</div>
+                <div className="text-2xl font-bold">{tidbCluster.pdNodes}</div>
+              </div>
+              {tidbCluster.useTiflash && (
+                <div className="bg-white p-3 rounded shadow">
+                  <div className="text-gray-600 text-sm">Estimated TiFlash Nodes</div>
+                  <div className="text-2xl font-bold">{tidbCluster.tiflashNodes}</div>
+                </div>
+              )}
+              <div className="bg-white p-3 rounded shadow">
+                <div className="text-gray-600 text-sm">Total Storage (GB)</div>
+                <div className="text-2xl font-bold">
+                  {(tidbCluster.tidbNodes * storage.tidbEbsSize) + 
+                   (tidbCluster.tikvNodes * (tikvInstanceStorageSize + storage.tikvAdditionalEbsSize)) + 
+                   (tidbCluster.pdNodes * storage.pdEbsSize) + 
+                   (tidbCluster.tiflashNodes * storage.tiflashEbsSize)}
+                </div>
+              </div>
+              <div className="bg-white p-3 rounded shadow">
+                <div className="text-gray-600 text-sm">K8s Worker Nodes</div>
+                <div className="text-2xl font-bold">{tidbCluster.k8sWorkerNodes}</div>
+              </div>
+            </div>
+          </div>
+          
+          {/* Cost Breakdown */}
+          <div className="bg-yellow-50 p-4 rounded shadow">
+            <h2 className="text-xl font-semibold mb-4">Monthly Cost Breakdown</h2>
+            <div className="overflow-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-yellow-100">
+                    <th className="p-2 text-left">Category</th>
+                    <th className="p-2 text-left">Subcategory</th>
+                    <th className="p-2 text-right">Cost ($)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b">
+                    <td className="p-2">EC2</td>
+                    <td className="p-2">TiDB Servers ({tidbCluster.tidbNodes}x {instances.tidbInstanceType})</td>
+                    <td className="p-2 text-right">${(tidbInstanceCost * tidbCluster.tidbNodes).toFixed(2)}</td>
+                  </tr>
+                  <tr className="border-b">
+                    <td className="p-2">EC2</td>
+                    <td className="p-2">TiKV Servers ({tidbCluster.tikvNodes}x {instances.tikvInstanceType})</td>
+                    <td className="p-2 text-right">${(tikvInstanceCost * tidbCluster.tikvNodes).toFixed(2)}</td>
+                  </tr>
+                  <tr className="border-b">
+                    <td className="p-2">EC2</td>
+                    <td className="p-2">PD Servers ({tidbCluster.pdNodes}x {instances.pdInstanceType})</td>
+                    <td className="p-2 text-right">${(pdInstanceCost * tidbCluster.pdNodes).toFixed(2)}</td>
+                  </tr>
+                  {tidbCluster.useTiflash && (
+                    <tr className="border-b">
+                      <td className="p-2">EC2</td>
+                      <td className="p-2">TiFlash Servers ({tidbCluster.tiflashNodes}x {instances.tiflashInstanceType})</td>
+                      <td className="p-2 text-right">${(tiflashInstanceCost * tidbCluster.tiflashNodes).toFixed(2)}</td>
+                    </tr>
+                  )}
+                  <tr className="border-b">
+                    <td className="p-2">EC2</td>
+                    <td className="p-2">Monitoring (1x {instances.monitoringInstanceType})</td>
+                    <td className="p-2 text-right">${monitoringInstanceCost.toFixed(2)}</td>
+                  </tr>
+                  <tr className="border-b">
+                    <td className="p-2">Storage</td>
+                    <td className="p-2">TiDB EBS Volumes ({storage.tidbEbsType})</td>
+                    <td className="p-2 text-right">${tidbStorageCost.toFixed(2)}</td>
+                  </tr>
+                  {storage.tikvAdditionalEbsSize > 0 && (
+                    <tr className="border-b">
+                      <td className="p-2">Storage</td>
+                      <td className="p-2">TiKV Additional EBS ({storage.tikvAdditionalEbsType})</td>
+                      <td className="p-2 text-right">${tikvAdditionalStorageCost.toFixed(2)}</td>
+                    </tr>
+                  )}
+                  <tr className="border-b">
+                    <td className="p-2">Storage</td>
+                    <td className="p-2">PD EBS Volumes ({storage.pdEbsType})</td>
+                    <td className="p-2 text-right">${pdStorageCost.toFixed(2)}</td>
+                  </tr>
+                  {tidbCluster.useTiflash && (
+                    <tr className="border-b">
+                      <td className="p-2">Storage</td>
+                      <td className="p-2">TiFlash EBS Volumes ({storage.tiflashEbsType})</td>
+                      <td className="p-2 text-right">${tiflashStorageCost.toFixed(2)}</td>
+                    </tr>
+                  )}
+                  {operational.backupToS3 && (
+                    <tr className="border-b">
+                      <td className="p-2">Backup</td>
+                      <td className="p-2">S3 Storage ({operational.backupSizeGB} GB)</td>
+                      <td className="p-2 text-right">${s3BackupCost.toFixed(2)}</td>
+                    </tr>
+                  )}
+                  <tr className="border-b">
+                    <td className="p-2">Network</td>
+                    <td className="p-2">Data Transfer ({operational.networkTrafficGB} GB)</td>
+                    <td className="p-2 text-right">${networkCost.toFixed(2)}</td>
+                  </tr>
+                  <tr className="border-b">
+                    <td className="p-2">Kubernetes</td>
+                    <td className="p-2">EKS Cluster ({tidbCluster.eksClusterCount}x)</td>
+                    <td className="p-2 text-right">${eksClusterCost.toFixed(2)}</td>
+                  </tr>
+                  <tr className="border-b">
+                    <td className="p-2">Kubernetes</td>
+                    <td className="p-2">EKS Monitoring Tools</td>
+                    <td className="p-2 text-right">${eksMonitoringCost.toFixed(2)}</td>
+                  </tr>
+                  <tr className="bg-yellow-100 font-bold">
+                    <td className="p-2">Total</td>
+                    <td className="p-2">Monthly Cost</td>
+                    <td className="p-2 text-right">${totalMonthlyCost.toFixed(2)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          
+          {/* One-time Costs */}
+          <div className="bg-orange-50 p-4 rounded shadow">
+            <h2 className="text-xl font-semibold mb-4">One-time Costs</h2>
+            <div className="overflow-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-orange-100">
+                    <th className="p-2 text-left">Category</th>
+                    <th className="p-2 text-right">Cost ($)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b">
+                    <td className="p-2">Migration</td>
+                    <td className="p-2 text-right">${operational.migrationCost.toFixed(2)}</td>
+                  </tr>
+                  <tr className="bg-orange-100 font-bold">
+                    <td className="p-2">Total One-time Costs</td>
+                    <td className="p-2 text-right">${oneTimeCosts.toFixed(2)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          
+          {/* Comparative Analysis */}
+          <div className="bg-blue-50 p-4 rounded shadow">
+            <h2 className="text-xl font-semibold mb-4">Cost Comparison</h2>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 text-center">
+                <div className="bg-white p-3 rounded shadow">
+                  <div className="text-gray-600 text-sm">Current PostgreSQL Monthly Cost</div>
+                  <div className="text-2xl font-bold">${postgresMonthlyCost.toFixed(2)}</div>
+                </div>
+                <div className="bg-white p-3 rounded shadow">
+                  <div className="text-gray-600 text-sm">TiDB Monthly Cost</div>
+                  <div className="text-2xl font-bold">${totalMonthlyCost.toFixed(2)}</div>
+                </div>
+                <div className="bg-white p-3 rounded shadow">
+                  <div className="text-gray-600 text-sm">Monthly Savings</div>
+                  <div className={`text-2xl font-bold ${monthlySavings >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    ${monthlySavings.toFixed(2)}
+                  </div>
+                </div>
+                <div className="bg-white p-3 rounded shadow">
+                  <div className="text-gray-600 text-sm">Savings Percentage</div>
+                  <div className={`text-2xl font-bold ${savingsPercentage >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {savingsPercentage.toFixed(1)}%
+                  </div>
+                </div>
+              </div>
+              
+              {monthlySavings > 0 && (
+                <div className="bg-white p-3 rounded shadow">
+                  <div className="text-gray-600 text-sm">Payback Period for One-time Costs</div>
+                  <div className="text-2xl font-bold">
+                    {isFinite(paybackPeriodMonths) ? 
+                      `${paybackPeriodMonths.toFixed(1)} months` : 
+                      'N/A'}
+                  </div>
+                </div>
+              )}
+              
+              <div className="bg-white p-3 rounded shadow">
+                <div className="text-gray-600 text-sm mb-2">Key TiDB Sizing Guidelines</div>
+                <ul className="list-disc pl-5 space-y-1 text-sm">
+                  <li>TiDB (SQL layer): Min 8 CPU cores per node recommended</li>
+                  <li>TiKV (Storage): Best on i3/i3en instances with NVMe storage</li>
+                  <li>PD (Placement Driver): Min 3 nodes required for quorum</li>
+                  <li>TiKV Storage: Keep below 4TB for PCIe SSDs, 1.5TB for regular SSDs</li>
+                  <li>TiDB nodes: Performance scales linearly up to 8 nodes</li>
+                  <li>TiKV nodes: Always deploy in multiples of 3 across AZs</li>
+                  <li>TiFlash (Analytics): Min 2 nodes for high availability when used</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          
+          {/* Recommendations */}
+          <div className="bg-indigo-50 p-4 rounded shadow">
+            <h2 className="text-xl font-semibold mb-4">Recommendations</h2>
+            <div className="bg-white p-3 rounded shadow">
+              <ul className="list-disc pl-5 space-y-2">
+                {tidbCluster.tidbNodes < 3 && (
+                  <li className="text-red-600">Increase TiDB nodes to at least 3 for high availability</li>
+                )}
+                {tidbCluster.tikvNodes < 3 && (
+                  <li className="text-red-600">Increase TiKV nodes to at least 3 for data redundancy</li>
+                )}
+                {tidbCluster.pdNodes < 3 && (
+                  <li className="text-red-600">Increase PD nodes to at least 3 for quorum</li>
+                )}
+                {tidbCluster.tikvNodes % 3 !== 0 && (
+                  <li className="text-red-600">TiKV nodes should be in multiples of 3 for proper distribution across AZs</li>
+                )}
+                {tidbCluster.k8sWorkerNodes < 6 && (
+                  <li className="text-red-600">Consider increasing Kubernetes worker nodes to at least 6 for proper distribution</li>
+                )}
+                {workload.type === 'OLAP' && !tidbCluster.useTiflash && (
+                  <li>Consider using TiFlash for analytical workloads</li>
+                )}
+                {tidbCluster.useTiflash && tidbCluster.tiflashNodes < 2 && (
+                  <li className="text-red-600">Increase TiFlash nodes to at least 2 for high availability</li>
+                )}
+                {storage.tikvUseInstanceStore && tikvInstanceStorageSize === 0 && (
+                  <li className="text-red-600">Selected TiKV instance type doesn't have instance store. Choose i3 family or disable 'Use Instance Store'</li>
+                )}
+                {storage.tikvUseInstanceStore && tikvInstanceStorageSize > 0 && tikvInstanceStorageSize > 4000 && (
+                  <li className="text-yellow-600">TiKV storage size exceeds 4TB per node. Consider using more nodes with smaller storage.</li>
+                )}
+                {!storage.tikvUseInstanceStore && storage.tikvAdditionalEbsSize > 1500 && (
+                  <li className="text-yellow-600">TiKV EBS size exceeds 1.5TB. Consider using NVMe instance store for better performance.</li>
+                )}
+                {!operational.backupToS3 && (
+                  <li>Consider enabling backups to S3 for disaster recovery</li>
+                )}
+                {tidbCluster.availabilityZones < 3 && (
+                  <li className="text-red-600">TiDB requires at least 3 availability zones for high availability</li>
+                )}
+                <li>Use i3 instance family for TiKV nodes to benefit from NVMe storage</li>
+                <li>Use gp3 volumes for better price/performance ratio compared to gp2</li>
+                <li>Consider reserving at least 8 vCPU per TiDB/TiKV node for production workloads</li>
+                <li>Enable EKS managed node groups for easier worker node management</li>
+                <li>Use EC2 Auto Scaling groups for worker nodes to handle varying loads</li>
+                <li>Consider AWS Load Balancer Controller for TiDB service exposure</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Render the component to the DOM
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<TiDBMigrationCalculator />);
