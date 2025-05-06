@@ -1221,3 +1221,9 @@ const TiDBMigrationCalculator = () => {
 };
 
 export default TiDBMigrationCalculator;
+
+// Your existing component code here...
+
+// Add this at the end of the file:
+const rootElement = document.getElementById('root');
+ReactDOM.createRoot(rootElement).render(<TiDBMigrationCalculator />);
